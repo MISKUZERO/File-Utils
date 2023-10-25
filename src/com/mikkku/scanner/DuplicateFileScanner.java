@@ -12,7 +12,7 @@ import java.security.NoSuchAlgorithmException;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 
-public class DuplicateFileScanner {
+public class DuplicateFileScanner {// TODO: 2023/10/26 非引用类型的常量用大写
 
     public static final int INIT_CAPACITY = 1 << 8;
     public static final int AVAILABLE_PROCESSORS = Runtime.getRuntime().availableProcessors();
@@ -31,7 +31,7 @@ public class DuplicateFileScanner {
 
     private volatile boolean scanOver;
 
-    public DuplicateFileScanner(File... files) {
+    public DuplicateFileScanner(String algorithm, File... files) {// TODO: 2023/10/26 用线程池来优化性能
         this.files = files;
         scanThreadCount = files.length;
         workThreadCount = AVAILABLE_PROCESSORS - scanThreadCount;
@@ -41,7 +41,7 @@ public class DuplicateFileScanner {
         messageDigests = new MessageDigest[workThreadCount + scanThreadCount];
         for (int i = 0; i < messageDigests.length; i++) {
             try {
-                messageDigests[i] = MessageDigest.getInstance("MD5");
+                messageDigests[i] = MessageDigest.getInstance(algorithm);
             } catch (NoSuchAlgorithmException e) {
                 System.err.println("启动失败！");
                 System.exit(1);
@@ -57,15 +57,16 @@ public class DuplicateFileScanner {
         try {
             scanLatch.await();
         } catch (InterruptedException e) {
-            e.printStackTrace();
-        } finally {
-            scanOver = true;
+            System.err.println("任务被终止！");
+            System.exit(2);
         }
+        scanOver = true;
         System.out.println("扫描完成！");
         try {
             workLatch.await();
         } catch (InterruptedException e) {
-            e.printStackTrace();
+            System.err.println("任务被终止！");
+            System.exit(2);
         }
         System.out.println("全部结束！");
         int unique = uniqueMap.size();
@@ -140,7 +141,7 @@ public class DuplicateFileScanner {
                         final MessageDigest messageDigest = messageDigests[id];
                         bytes = messageDigest.digest(bytes);
                         String encode = HexBin.encode(bytes);
-                        System.out.println(encode);
+//                        System.out.println(encode);
                         //3.处理结果
                         String oldPath = uniqueMap.put(encode, file.toString());
                         if (oldPath != null) {
@@ -156,8 +157,8 @@ public class DuplicateFileScanner {
             } catch (FileNotFoundException e) {
                 System.err.println("路径不存在：" + path);
             } finally {
-                scanLatch.countDown();
                 System.out.println(currentThread().getName() + " -> Scanner-" + id + "：结束工作！");
+                scanLatch.countDown();
             }
         }
     }
@@ -184,7 +185,7 @@ public class DuplicateFileScanner {
                         //2.生成MD5码
                         bytes = messageDigest.digest(bytes);
                         String encode = HexBin.encode(bytes);
-                        System.out.println(encode);
+//                        System.out.println(encode);
                         //3.处理结果
                         String oldPath = uniqueMap.put(encode, dataUnit.getPath());
                         if (oldPath != null) {
@@ -197,8 +198,8 @@ public class DuplicateFileScanner {
                         }
                     }
             } finally {
-                workLatch.countDown();
                 System.out.println(currentThread().getName() + " -> Worker-" + id + "：结束工作！");
+                workLatch.countDown();
             }
         }
     }
