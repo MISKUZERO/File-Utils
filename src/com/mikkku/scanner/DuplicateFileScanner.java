@@ -12,14 +12,16 @@ import java.security.NoSuchAlgorithmException;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 
-public class DuplicateFileScanner {// TODO: 2023/10/26 非引用类型的常量用大写
+public class DuplicateFileScanner {
 
-    public static final int INIT_CAPACITY = 1 << 8;
-    public static final int AVAILABLE_PROCESSORS = Runtime.getRuntime().availableProcessors();
+    private static final int PROCESSORS = Runtime.getRuntime().availableProcessors();
+    private static final int INIT_CAPACITY = 1 << 8;
 
-    private final File[] files;
+    private volatile boolean scanOver;
+
     private final int scanThreadCount;
     private final int workThreadCount;
+    private final File[] files;
     private final DataUnit[] dataList;
     private final CountDownLatch scanLatch;
     private final CountDownLatch workLatch;
@@ -29,12 +31,10 @@ public class DuplicateFileScanner {// TODO: 2023/10/26 非引用类型的常量�
     private final CopyOnWriteArrayList<String> repeatList = new CopyOnWriteArrayList<>();
     private final ConcurrentHashMap<String, String> uniqueMap = new ConcurrentHashMap<>(INIT_CAPACITY);
 
-    private volatile boolean scanOver;
-
     public DuplicateFileScanner(String algorithm, File... files) {// TODO: 2023/10/26 用线程池来优化性能
         this.files = files;
         scanThreadCount = files.length;
-        workThreadCount = AVAILABLE_PROCESSORS - scanThreadCount;
+        workThreadCount = PROCESSORS - scanThreadCount;
         dataList = new DataUnit[scanThreadCount + workThreadCount];
         scanLatch = new CountDownLatch(scanThreadCount);
         workLatch = new CountDownLatch(workThreadCount);
@@ -53,7 +53,7 @@ public class DuplicateFileScanner {// TODO: 2023/10/26 非引用类型的常量�
     public void scan() {
         long begin = System.currentTimeMillis();
         for (int i = 0; i < scanThreadCount; i++) new ScanThread(i, files[i]).start();
-        for (int i = 0; i < workThreadCount; i++) new WorkThread(scanThreadCount + i).start();
+        for (int i = scanThreadCount; i < scanThreadCount + workThreadCount; i++) new WorkThread(i).start();
         try {
             scanLatch.await();
         } catch (InterruptedException e) {
@@ -61,28 +61,28 @@ public class DuplicateFileScanner {// TODO: 2023/10/26 非引用类型的常量�
             System.exit(2);
         }
         scanOver = true;
-        System.out.println("扫描完成！");
+//        System.out.println("扫描完成！");
         try {
             workLatch.await();
         } catch (InterruptedException e) {
             System.err.println("任务被终止！");
             System.exit(2);
         }
-        System.out.println("全部结束！");
+//        System.out.println("全部结束！");
         int unique = uniqueMap.size();
-        System.out.println("未重复文件数：" + unique);
-        System.out.println("重复文件数：" + repeatCount);
-        System.out.println("失败文件数：" + failCount);
+//        System.out.println("未重复文件数：" + unique);
+//        System.out.println("重复文件数：" + repeatCount);
+//        System.out.println("失败文件数：" + failCount);
         System.out.println("总文件数：" + failCount.addAndGet(repeatCount.addAndGet(unique)));
         long end = System.currentTimeMillis();
-        System.out.println("用时：" + (end - begin) + "ms");
+//        System.out.println("用时：" + (end - begin) + "ms");
         // TODO: 2023/10/25 写到bat文件（用mklink创建快捷方式），也要写到文本文件
-        for (String s : repeatList) {
-            System.out.println(s);
-        }
+//        for (String s : repeatList) {
+//            System.out.println(s);
+//        }
     }
 
-    private static class DataUnit {
+    public static class DataUnit {
 
         private final byte[] bytes;
         private final String path;
@@ -115,12 +115,12 @@ public class DuplicateFileScanner {// TODO: 2023/10/26 非引用类型的常量�
 
         @Override
         public void run() {
-            System.out.println(currentThread().getName() + " -> Scanner-" + id + "：开始工作！");
+//            System.out.println(currentThread().getName() + " -> Scanner-" + id + "：开始工作！");
             try {
                 new FileScanner<DataUnit>(dataList) {
 
                     @Override
-                    protected void operate(DataUnit[] elements, File file) {
+                    protected void operate(DataUnit[] dataUnits, File file) {
                         byte[] bytes;
                         try {
                             bytes = FileUtils.fileToBytes(file);
@@ -132,11 +132,14 @@ public class DuplicateFileScanner {// TODO: 2023/10/26 非引用类型的常量�
                             failCount.addAndGet(1);
                             return;
                         }
-                        for (int i = scanThreadCount; i < elements.length; i++)// TODO: 2023/10/25  添加索引优化
-                            if (elements[i] == null) {
-                                elements[i] = new DataUnit(bytes, file.toString());
-                                return;
-                            }
+                        for (int i = scanThreadCount; i < dataUnits.length; i++) // TODO: 2023/10/25  添加索引优化
+                            if (dataUnits[i] == null)
+                                synchronized (this) {
+                                    if (dataUnits[i] == null) {
+                                        dataUnits[i] = new DataUnit(bytes, file.toString());
+                                        return;
+                                    }
+                                }
                         //未添加数据，自行处理
                         final MessageDigest messageDigest = messageDigests[id];
                         bytes = messageDigest.digest(bytes);
@@ -157,7 +160,7 @@ public class DuplicateFileScanner {// TODO: 2023/10/26 非引用类型的常量�
             } catch (FileNotFoundException e) {
                 System.err.println("路径不存在：" + path);
             } finally {
-                System.out.println(currentThread().getName() + " -> Scanner-" + id + "：结束工作！");
+//                System.out.println(currentThread().getName() + " -> Scanner-" + id + "：结束工作！");
                 scanLatch.countDown();
             }
         }
@@ -173,7 +176,7 @@ public class DuplicateFileScanner {// TODO: 2023/10/26 非引用类型的常量�
 
         @Override
         public void run() {
-            System.out.println(currentThread().getName() + " -> Worker-" + id + "：开始工作！");
+//            System.out.println(currentThread().getName() + " -> Worker-" + id + "：开始工作！");
             try {
                 final MessageDigest messageDigest = messageDigests[id];
                 DataUnit dataUnit;
@@ -198,7 +201,7 @@ public class DuplicateFileScanner {// TODO: 2023/10/26 非引用类型的常量�
                         }
                     }
             } finally {
-                System.out.println(currentThread().getName() + " -> Worker-" + id + "：结束工作！");
+//                System.out.println(currentThread().getName() + " -> Worker-" + id + "：结束工作！");
                 workLatch.countDown();
             }
         }
