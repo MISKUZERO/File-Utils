@@ -17,15 +17,11 @@ public class DuplicateFileScanner {
     private static final int PROCESSORS = Runtime.getRuntime().availableProcessors();
     private static final int INIT_CAPACITY = 1 << 8;
 
-    private volatile boolean scanOver;
-
     private final int scanThreadCount;
-    private final int workThreadCount;
     private final File[] files;
-    private final DataUnit[] dataList;
-    private final CountDownLatch scanLatch;
-    private final CountDownLatch workLatch;
     private final MessageDigest[] messageDigests;
+    private final CountDownLatch scanLatch;
+    private final ThreadPoolExecutor executor;
     private final AtomicInteger failCount = new AtomicInteger();
     private final AtomicInteger repeatCount = new AtomicInteger();
     private final CopyOnWriteArrayList<String> repeatList = new CopyOnWriteArrayList<>();
@@ -34,11 +30,8 @@ public class DuplicateFileScanner {
     public DuplicateFileScanner(String algorithm, File... files) {// TODO: 2023/10/26 用线程池来优化性能
         this.files = files;
         scanThreadCount = files.length;
-        workThreadCount = PROCESSORS - scanThreadCount;
-        dataList = new DataUnit[scanThreadCount + workThreadCount];
         scanLatch = new CountDownLatch(scanThreadCount);
-        workLatch = new CountDownLatch(workThreadCount);
-        messageDigests = new MessageDigest[workThreadCount + scanThreadCount];
+        messageDigests = new MessageDigest[PROCESSORS];
         for (int i = 0; i < messageDigests.length; i++) {
             try {
                 messageDigests[i] = MessageDigest.getInstance(algorithm);
@@ -47,81 +40,88 @@ public class DuplicateFileScanner {
                 System.exit(1);
             }
         }
+        ThreadFactory threadFactory = new ThreadFactory() {
+            private int id;
+
+            @Override
+            public Thread newThread(Runnable r) {
+                System.out.println("Worker-" + id + ": " + Thread.currentThread().getName() + "：线程创建！");
+                return new Worker(r, messageDigests[id++]);//TODO 需要原子类？
+            }
+        };
+        executor = new ThreadPoolExecutor(
+                PROCESSORS,
+                PROCESSORS,
+                0,
+                TimeUnit.SECONDS,
+                new LinkedBlockingQueue<>(),
+                threadFactory,
+                new ThreadPoolExecutor.CallerRunsPolicy()
+        ) {
+            @Override
+            protected void beforeExecute(Thread t, Runnable r) {
+                if (r.getClass() == WorkThread.class)
+                    ((WorkThread) r).messageDigest = ((Worker) t).messageDigest;
+            }
+        };
     }
 
 
     public void scan() {
+        for (int i = 0; i < scanThreadCount; i++) {
+            executor.execute(new ScanThread(files[i]));
+        }
         long begin = System.currentTimeMillis();
-        for (int i = 0; i < scanThreadCount; i++) new ScanThread(i, files[i]).start();
-        for (int i = scanThreadCount; i < scanThreadCount + workThreadCount; i++) new WorkThread(i).start();
         try {
             scanLatch.await();
         } catch (InterruptedException e) {
             System.err.println("任务被终止！");
             System.exit(2);
         }
-        scanOver = true;
-//        System.out.println("扫描完成！");
-        try {
-            workLatch.await();
-        } catch (InterruptedException e) {
-            System.err.println("任务被终止！");
-            System.exit(2);
-        }
-//        System.out.println("全部结束！");
+        System.out.println("扫描完成！");
+        System.out.println("全部结束！");
         int unique = uniqueMap.size();
-//        System.out.println("未重复文件数：" + unique);
-//        System.out.println("重复文件数：" + repeatCount);
-//        System.out.println("失败文件数：" + failCount);
+        System.out.println("未重复文件数：" + unique);
+        System.out.println("重复文件数：" + repeatCount);
+        System.out.println("失败文件数：" + failCount);
         System.out.println("总文件数：" + failCount.addAndGet(repeatCount.addAndGet(unique)));
         long end = System.currentTimeMillis();
-//        System.out.println("用时：" + (end - begin) + "ms");
+        System.out.println("用时：" + (end - begin) + "ms");
         // TODO: 2023/10/25 写到bat文件（用mklink创建快捷方式），也要写到文本文件
-//        for (String s : repeatList) {
-//            System.out.println(s);
-//        }
+        for (String s : repeatList) {
+            System.out.println(s);
+        }
+        System.exit(0);
     }
 
-    public static class DataUnit {
+    private static class Worker extends Thread {
 
-        private final byte[] bytes;
-        private final String path;
+        private final MessageDigest messageDigest;
 
-        public DataUnit(byte[] key, String value) {
-            this.bytes = key;
-            this.path = value;
+        private Worker(Runnable runnable, MessageDigest messageDigest) {
+            super(runnable);
+            this.messageDigest = messageDigest;
         }
-
-        public byte[] getBytes() {
-            return bytes;
-        }
-
-        public String getPath() {
-            return path;
-        }
-
     }
 
-    private class ScanThread extends Thread {
-
-        private final int id;
+    private class ScanThread implements Runnable {
 
         private final File path;
 
-        public ScanThread(int id, File path) {
-            this.id = id;
+        public ScanThread(File path) {
             this.path = path;
         }
 
         @Override
         public void run() {
-//            System.out.println(currentThread().getName() + " -> Scanner-" + id + "：开始工作！");
+            System.out.println("Scan Thread: " + Thread.currentThread().getName() + "：开始工作！");
             try {
-                new FileScanner<DataUnit>(dataList) {
+                new FileScanner() {
 
                     @Override
-                    protected void operate(DataUnit[] dataUnits, File file) {
+                    protected void operate(File file) {
                         byte[] bytes;
+                        //生成字节数组
                         try {
                             bytes = FileUtils.fileToBytes(file);
                         } catch (IOException ioException) {
@@ -132,78 +132,48 @@ public class DuplicateFileScanner {
                             failCount.addAndGet(1);
                             return;
                         }
-                        for (int i = scanThreadCount; i < dataUnits.length; i++) // TODO: 2023/10/25  添加索引优化
-                            if (dataUnits[i] == null)
-                                synchronized (this) {
-                                    if (dataUnits[i] == null) {
-                                        dataUnits[i] = new DataUnit(bytes, file.toString());
-                                        return;
-                                    }
-                                }
-                        //未添加数据，自行处理
-                        final MessageDigest messageDigest = messageDigests[id];
-                        bytes = messageDigest.digest(bytes);
-                        String encode = HexBin.encode(bytes);
-//                        System.out.println(encode);
-                        //3.处理结果
-                        String oldPath = uniqueMap.put(encode, file.toString());
-                        if (oldPath != null) {
-                            repeatCount.addAndGet(1);
-                            if (!repeatList.contains(encode))
-                                repeatList.add(encode);
-                            if (!repeatList.contains(oldPath))
-                                repeatList.add(repeatList.indexOf(encode) + 1, oldPath);
-                            repeatList.add(repeatList.indexOf(encode) + 1, file.toString());
-                        }
+                        executor.execute(new WorkThread(bytes, file));
                     }
                 }.scanFiles(path);
             } catch (FileNotFoundException e) {
                 System.err.println("路径不存在：" + path);
             } finally {
-//                System.out.println(currentThread().getName() + " -> Scanner-" + id + "：结束工作！");
+                System.out.println("Scan Thread: " + Thread.currentThread().getName() + "：结束工作！");
                 scanLatch.countDown();
             }
         }
     }
 
-    private class WorkThread extends Thread {
+    private class WorkThread implements Runnable {
 
-        private final int id;
+        private final byte[] bytes;
+        private final File file;
+        private MessageDigest messageDigest;
 
-        public WorkThread(int id) {
-            this.id = id;
+        public WorkThread(byte[] bytes, File file) {
+            this.bytes = bytes;
+            this.file = file;
         }
 
         @Override
         public void run() {
-//            System.out.println(currentThread().getName() + " -> Worker-" + id + "：开始工作！");
-            try {
-                final MessageDigest messageDigest = messageDigests[id];
-                DataUnit dataUnit;
-                while ((dataUnit = dataList[id]) != null || !scanOver)
-                    if (dataUnit != null) {
-                        //1.取字节数据
-                        dataList[id] = null;
-                        byte[] bytes = dataUnit.getBytes();
-                        //2.生成MD5码
-                        bytes = messageDigest.digest(bytes);
-                        String encode = HexBin.encode(bytes);
-//                        System.out.println(encode);
-                        //3.处理结果
-                        String oldPath = uniqueMap.put(encode, dataUnit.getPath());
-                        if (oldPath != null) {
-                            repeatCount.addAndGet(1);
-                            if (!repeatList.contains(encode))
-                                repeatList.add(encode);
-                            if (!repeatList.contains(oldPath))
-                                repeatList.add(repeatList.indexOf(encode) + 1, oldPath);
-                            repeatList.add(repeatList.indexOf(encode) + 1, dataUnit.getPath());
-                        }
-                    }
-            } finally {
-//                System.out.println(currentThread().getName() + " -> Worker-" + id + "：结束工作！");
-                workLatch.countDown();
+            System.out.println("Work Thread: " + Thread.currentThread().getName() + "：开始工作！");
+            if (!repeatList.contains(messageDigest.hashCode() + ""))
+                repeatList.add(0, messageDigest.hashCode() + "");
+            //1.生成MD5码
+            String encode = HexBin.encode(messageDigest.digest(bytes));
+            System.out.println(encode);
+            //2.处理结果
+            String oldFile = uniqueMap.put(encode, file.toString());
+            if (oldFile != null) {
+                repeatCount.addAndGet(1);
+                if (!repeatList.contains(encode))
+                    repeatList.add(encode);
+                if (!repeatList.contains(oldFile))
+                    repeatList.add(repeatList.indexOf(encode) + 1, oldFile);
+                repeatList.add(repeatList.indexOf(encode) + 1, file.toString());
             }
+            System.out.println("Work Thread: " + Thread.currentThread().getName() + "：结束工作！");
         }
     }
 
