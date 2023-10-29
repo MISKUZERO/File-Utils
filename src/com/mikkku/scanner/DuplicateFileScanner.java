@@ -21,9 +21,11 @@ public class DuplicateFileScanner {
     private final MessageDigest[] messageDigests;
     private final CountDownLatch scanLatch;
     private final ThreadPoolExecutor executor;
-    private final AtomicInteger failCount = new AtomicInteger();
+    private final CountDownLatch executorLatch = new CountDownLatch(1);
     private final AtomicInteger repeatCount = new AtomicInteger();
+    private final AtomicInteger oversizeCount = new AtomicInteger();
     private final CopyOnWriteArrayList<String> repeatList = new CopyOnWriteArrayList<>();
+    private final CopyOnWriteArrayList<String> oversizeList = new CopyOnWriteArrayList<>();
     private final ConcurrentHashMap<String, String> uniqueMap = new ConcurrentHashMap<>(INIT_CAPACITY);
 
     public DuplicateFileScanner(String algorithm, File... files) {
@@ -61,12 +63,20 @@ public class DuplicateFileScanner {
                         super.rejectedExecution(r, e);
                     }
                 }
-        );
+        ) {
+            @Override
+            protected void terminated() {
+                try {
+                    super.terminated();
+                } finally {
+                    executorLatch.countDown();
+                }
+            }
+        };
     }
 
 
-    public void scan() {
-        long begin = System.currentTimeMillis();
+    public Object[] scan() {
         for (File file : files) executor.execute(new ScanThread(file));
         try {
             scanLatch.await();
@@ -75,19 +85,17 @@ public class DuplicateFileScanner {
             System.exit(2);
         }
         executor.shutdown();
-        System.out.println("扫描完成！");
-        System.out.println("全部结束！");
-        int unique = uniqueMap.size();
-        System.out.println("未重复文件数：" + unique);
-        System.out.println("重复文件数：" + repeatCount);
-        System.out.println("失败文件数：" + failCount);
-        System.out.println("总文件数：" + failCount.addAndGet(repeatCount.addAndGet(unique)));
-        long end = System.currentTimeMillis();
-        System.out.println("用时：" + (end - begin) + "ms");
-        // TODO: 2023/10/25 写到bat文件（用mklink创建快捷方式），也要写到文本文件
-        for (String s : repeatList) {
-            System.out.println(s);
+        try {
+            executorLatch.await();
+        } catch (InterruptedException e) {
+            System.err.println("任务被终止！");
+            System.exit(2);
         }
+        int uniqueCount = uniqueMap.size();
+        int repeatCount = this.repeatCount.get();
+        int oversizeCount = this.oversizeCount.get();
+        int count = uniqueCount + repeatCount + oversizeCount;
+        return new Object[]{uniqueCount, repeatCount, oversizeCount, count, repeatList.clone(), oversizeList.clone()};
     }
 
     private static class Worker extends Thread {
@@ -116,17 +124,18 @@ public class DuplicateFileScanner {
                     @Override
                     protected void operate(File file) {
                         byte[] bytes;
+                        //1.生成字节数组
                         try {
-                            //生成字节数组
                             bytes = FileUtils.fileToBytes(file);
                         } catch (IOException ioException) {
                             ioException.printStackTrace();
                             return;
-                        } catch (FileOversizeException fileOversizeException) {// TODO: 2023/10/24 大文件处理
-                            System.err.println("不能处理超过2GB的文件：" + file);
-                            failCount.addAndGet(1);
+                        } catch (FileOversizeException fileOversizeException) {
+                            oversizeCount.addAndGet(1);
+                            oversizeList.add(file + " -- " + file.length());
                             return;
                         }
+                        //2.提交任务
                         executor.execute(new WorkThread(bytes, file));
                         System.out.println("阻塞队列长度：" + executor.getQueue().size());
                     }
@@ -153,7 +162,6 @@ public class DuplicateFileScanner {
         public void run() {
             //1.生成MD5码
             String encode = HexBin.encode((((Worker) Thread.currentThread()).messageDigest).digest(bytes));
-            System.out.println(encode);
             //2.处理结果
             String oldFile = uniqueMap.put(encode, file.toString());
             if (oldFile != null) {
