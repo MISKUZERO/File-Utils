@@ -9,24 +9,27 @@ import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.ArrayList;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.ReentrantLock;
 
 public class DuplicateFileScanner {
 
     private static final int PROCESSORS = Runtime.getRuntime().availableProcessors();
-    private static final int INIT_CAPACITY = 1 << 8;
+    private static final int INIT_CAPACITY = 1 << 4;
 
     private final File[] files;
     private final MessageDigest[] messageDigests;
     private final CountDownLatch scanLatch;
     private final ThreadPoolExecutor executor;
     private final CountDownLatch executorLatch = new CountDownLatch(1);
+    private final ReentrantLock reentrantLock = new ReentrantLock();
     private final AtomicInteger repeatCount = new AtomicInteger();
     private final AtomicInteger oversizeCount = new AtomicInteger();
-    private final CopyOnWriteArrayList<String> repeatList = new CopyOnWriteArrayList<>();
-    private final CopyOnWriteArrayList<String> oversizeList = new CopyOnWriteArrayList<>();
-    private final ConcurrentHashMap<String, String> uniqueMap = new ConcurrentHashMap<>(INIT_CAPACITY);
+    private final ArrayList<String> repeatList = new ArrayList<>(INIT_CAPACITY);
+    private final ArrayList<String> oversizeList = new ArrayList<>(INIT_CAPACITY);
+    private final ConcurrentHashMap<String, String> uniqueMap = new ConcurrentHashMap<>(INIT_CAPACITY << 4);
 
     public DuplicateFileScanner(String algorithm, File... files) {
         this.files = files;
@@ -132,7 +135,12 @@ public class DuplicateFileScanner {
                             return;
                         } catch (FileOversizeException fileOversizeException) {
                             oversizeCount.addAndGet(1);
-                            oversizeList.add(file + " -- " + file.length());
+                            reentrantLock.lock();
+                            try {
+                                oversizeList.add(file + " -- " + file.length());
+                            } finally {
+                                reentrantLock.unlock();
+                            }
                             return;
                         }
                         //2.提交任务
@@ -165,12 +173,19 @@ public class DuplicateFileScanner {
             //2.处理结果
             String oldFile = uniqueMap.put(encode, file.toString());
             if (oldFile != null) {
+                String _encode = ">" + encode;
                 repeatCount.addAndGet(1);
-                if (!repeatList.contains(encode))
-                    repeatList.add(encode);
-                if (!repeatList.contains(oldFile))
-                    repeatList.add(repeatList.indexOf(encode) + 1, oldFile);
-                repeatList.add(repeatList.indexOf(encode) + 1, file.toString());
+                reentrantLock.lock();
+                try {
+                    if (!repeatList.contains(_encode))
+                        repeatList.add(_encode);
+                    if (!repeatList.contains(oldFile))
+                        repeatList.add(repeatList.indexOf(_encode) + 1, oldFile);
+                    repeatList.add(repeatList.indexOf(_encode) + 1, file.toString());
+                } finally {
+                    reentrantLock.unlock();
+                }
+
             }
         }
     }

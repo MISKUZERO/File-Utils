@@ -30,18 +30,15 @@ public class Launcher {
         List<String> oversizeList = (List<String>) res[5];
         // TODO: 2023/10/25 写到bat文件（用mklink创建快捷方式），也要写到文本文件
         String currentPath = System.getProperty("user.dir") + "\\";
-        String title = "Create by MiskuZero";
         if (!repeatList.isEmpty()) {
-            try (PrintStream repeatListPS = new PrintStream(currentPath + "Hash Collision.txt")) {
-                repeatListPS.println(title);
+            try (PrintStream repeatListPS = new PrintStream(currentPath + "hash_collision.txt")) {
                 for (String s : repeatList) repeatListPS.println(s);
             } catch (FileNotFoundException e) {
                 e.printStackTrace();
             }
         }
         if (!oversizeList.isEmpty()) {
-            try (PrintStream overSizeListPS = new PrintStream(currentPath + "Oversize File.txt")) {
-                overSizeListPS.println(title);
+            try (PrintStream overSizeListPS = new PrintStream(currentPath + "oversize_file.txt")) {
                 for (String s : oversizeList) overSizeListPS.println(s);
             } catch (FileNotFoundException e) {
                 e.printStackTrace();
