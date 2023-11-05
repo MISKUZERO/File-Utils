@@ -1,18 +1,14 @@
 package com.mikkku.scanner;
 
-import com.mikkku.exception.FileOversizeException;
 import com.mikkku.util.FileUtils;
 import com.sun.org.apache.xerces.internal.impl.dv.util.HexBin;
 
 import java.io.File;
 import java.io.FileNotFoundException;
-import java.io.IOException;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.util.ArrayList;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.locks.ReentrantLock;
 
 public class DuplicateFileScanner {
 
@@ -24,12 +20,12 @@ public class DuplicateFileScanner {
     private final CountDownLatch scanLatch;
     private final ThreadPoolExecutor executor;
     private final CountDownLatch executorLatch = new CountDownLatch(1);
-    private final ReentrantLock reentrantLock = new ReentrantLock();
     private final AtomicInteger repeatCount = new AtomicInteger();
-    private final AtomicInteger oversizeCount = new AtomicInteger();
-    private final ArrayList<String> repeatList = new ArrayList<>(INIT_CAPACITY);
-    private final ArrayList<String> oversizeList = new ArrayList<>(INIT_CAPACITY);
-    private final ConcurrentHashMap<String, String> uniqueMap = new ConcurrentHashMap<>(INIT_CAPACITY << 4);
+    private final AtomicInteger failCount = new AtomicInteger();
+    private final ConcurrentHashMap<String, String> hashMap = new ConcurrentHashMap<>(INIT_CAPACITY << 4);
+    private final ConcurrentHashMap<String, String> sizeMap = new ConcurrentHashMap<>(INIT_CAPACITY);
+    private final ConcurrentHashMap<String, String> antiHashMap = new ConcurrentHashMap<>(INIT_CAPACITY);
+    private final ConcurrentHashMap<String, String> antiSizeMap = new ConcurrentHashMap<>(INIT_CAPACITY);
 
     public DuplicateFileScanner(String algorithm, File... files) {
         this.files = files;
@@ -94,11 +90,11 @@ public class DuplicateFileScanner {
             System.err.println("任务被终止！");
             System.exit(2);
         }
-        int uniqueCount = uniqueMap.size();
+        int uniqueCount = hashMap.size() + sizeMap.size();
         int repeatCount = this.repeatCount.get();
-        int oversizeCount = this.oversizeCount.get();
-        int count = uniqueCount + repeatCount + oversizeCount;
-        return new Object[]{uniqueCount, repeatCount, oversizeCount, count, repeatList.clone(), oversizeList.clone()};
+        int failCount = this.failCount.get();
+        int fileCount = uniqueCount + repeatCount + failCount;
+        return new Object[]{uniqueCount, repeatCount, failCount, fileCount, antiHashMap, antiSizeMap};
     }
 
     private static class Worker extends Thread {
@@ -126,21 +122,25 @@ public class DuplicateFileScanner {
 
                     @Override
                     protected void operate(File file) {
-                        byte[] bytes;
+                        //超过2GB的文件的处理
+                        long size = file.length();
+                        if (size > Integer.MAX_VALUE) {
+                            String oldFile = sizeMap.put(size + "", file.toString());
+                            if (oldFile != null) {
+                                repeatCount.addAndGet(1);
+                                antiSizeMap.put(size + "\\" + oldFile, "");
+                                antiSizeMap.put(size + "\\" + file, "");
+                            }
+                            return;
+                        }
                         //1.生成字节数组
+                        byte[] bytes;
+
                         try {
                             bytes = FileUtils.fileToBytes(file);
-                        } catch (IOException ioException) {
-                            ioException.printStackTrace();
-                            return;
-                        } catch (FileOversizeException fileOversizeException) {
-                            oversizeCount.addAndGet(1);
-                            reentrantLock.lock();
-                            try {
-                                oversizeList.add(file + " -- " + file.length());
-                            } finally {
-                                reentrantLock.unlock();
-                            }
+                        } catch (Exception e) {
+                            failCount.addAndGet(1);
+                            e.printStackTrace();
                             return;
                         }
                         //2.提交任务
@@ -171,21 +171,11 @@ public class DuplicateFileScanner {
             //1.生成MD5码
             String encode = HexBin.encode((((Worker) Thread.currentThread()).messageDigest).digest(bytes));
             //2.处理结果
-            String oldFile = uniqueMap.put(encode, file.toString());
+            String oldFile = hashMap.put(encode, file.toString());
             if (oldFile != null) {
-                String _encode = ">" + encode;
                 repeatCount.addAndGet(1);
-                reentrantLock.lock();
-                try {
-                    if (!repeatList.contains(_encode))
-                        repeatList.add(_encode);
-                    if (!repeatList.contains(oldFile))
-                        repeatList.add(repeatList.indexOf(_encode) + 1, oldFile);
-                    repeatList.add(repeatList.indexOf(_encode) + 1, file.toString());
-                } finally {
-                    reentrantLock.unlock();
-                }
-
+                antiHashMap.put(encode + "\\" + oldFile, "");
+                antiHashMap.put(encode + "\\" + file, "");
             }
         }
     }

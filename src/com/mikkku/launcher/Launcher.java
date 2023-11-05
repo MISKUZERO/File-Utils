@@ -6,43 +6,70 @@ import com.mikkku.scanner.DuplicateFileScanner;
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.PrintStream;
-import java.util.List;
+import java.nio.file.FileAlreadyExistsException;
+import java.util.Map;
+import java.util.Set;
 
 public class Launcher {
 
-    public static void main(String[] args) {
-        // TODO: 2023/10/24 处理参数args，给多个路径不能是包含关系的路径
-        long begin = System.currentTimeMillis();
-        Object[] res = new DuplicateFileScanner(
-                "MD5",
+    public static void main(String[] args) throws FileAlreadyExistsException {
+        // TODO: 2023/11/5 模拟数据，真实数据需要通过命令行传参
+        File linkDir = new File(System.getProperty("user.dir") + "\\link");
+        if (!linkDir.mkdir())
+            throw new FileAlreadyExistsException("The directory \"link\" is already exists");
+        File[] files = {
                 new File("C:\\Users\\Administrator\\Desktop\\shattered-pixel-dungeon"),
-                new File("C:\\Users\\Administrator\\Desktop\\openJDK")
-        ).scan();
+                new File("C:\\Users\\Administrator\\Desktop\\openJDK"),
+                new File("C:\\Users\\Administrator\\Desktop\\new world tmp\\23.09.26 卡芙卡.mp4"),
+                new File("C:\\Users\\Administrator\\Desktop\\new world tmp\\23.09.26 卡芙卡.mp4")
+        };
+        long begin = System.currentTimeMillis();
+        Object[] res = new DuplicateFileScanner("MD5", files).scan();
         long end = System.currentTimeMillis();
-        System.out.println("未重复文件：" + res[0]);
-        System.out.println("重复文件：" + res[1]);
-        System.out.println("大文件：" + res[2]);
+        System.out.println("未重复：" + res[0]);
+        System.out.println("重复：" + res[1]);
+        System.out.println("失败：" + res[2]);
         System.out.println("总计：" + res[3]);
         System.out.println("用时：" + (end - begin) + "ms");
         @SuppressWarnings("unchecked")
-        List<String> repeatList = (List<String>) res[4];
+        Map<String, String> antiHashMap = (Map<String, String>) res[4];
         @SuppressWarnings("unchecked")
-        List<String> oversizeList = (List<String>) res[5];
-        // TODO: 2023/10/25 写到bat文件（用mklink创建快捷方式），也要写到文本文件
-        String currentPath = System.getProperty("user.dir") + "\\";
-        if (!repeatList.isEmpty()) {
-            try (PrintStream repeatListPS = new PrintStream(currentPath + "hash_collision.txt")) {
-                for (String s : repeatList) repeatListPS.println(s);
-            } catch (FileNotFoundException e) {
-                e.printStackTrace();
-            }
+        Map<String, String> antiSizeMap = (Map<String, String>) res[5];
+        //写入到vbs脚本（创建快捷方式）
+        if (!antiHashMap.isEmpty()) {
+            File hashDir = new File(linkDir + "\\hash");
+            if (!hashDir.mkdir())
+                throw new FileAlreadyExistsException("The directory \"hash\" is already exists");
+            writeVBS(antiHashMap, hashDir);
         }
-        if (!oversizeList.isEmpty()) {
-            try (PrintStream overSizeListPS = new PrintStream(currentPath + "oversize_file.txt")) {
-                for (String s : oversizeList) overSizeListPS.println(s);
-            } catch (FileNotFoundException e) {
-                e.printStackTrace();
+        if (!antiSizeMap.isEmpty()) {
+            File sizeDir = new File(linkDir + "\\size");
+            if (!sizeDir.mkdir())
+                throw new FileAlreadyExistsException("The directory \"size\" is already exists");
+            writeVBS(antiSizeMap, sizeDir);
+        }
+    }
+
+    private static void writeVBS(Map<String, String> map, File dir) {
+        try (PrintStream printStream = new PrintStream(dir + "\\make_link.vbs")) {
+            int num = 1;
+            Set<String> set = map.keySet();
+            printStream.println("Set wss=CreateObject(\"WScript.Shell\") ");
+            for (String str : set) {
+                String[] props = str.split("\\\\", 0);
+                printStream.println("Set s=wss.CreateShortcut(\"" +
+                        props[0] +
+                        "_" + num + "_" +
+                        props[props.length - 1] +
+                        ".lnk\")");
+                printStream.println("s.TargetPath=\"" +
+                        str.substring(props[0].length() + 1) +
+                        "\"");
+                printStream.println("s.Save");
+                num++;
             }
+        } catch (FileNotFoundException e) {
+            e.printStackTrace();
         }
     }
 }
