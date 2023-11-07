@@ -20,7 +20,7 @@ public class Launcher {
         File[] files = {
                 new File("C:\\Users\\Administrator\\Desktop\\shattered-pixel-dungeon"),
                 new File("C:\\Users\\Administrator\\Desktop\\openJDK"),
-                new File("C:\\Users\\Administrator\\Desktop\\new world tmp\\23.09.26 卡芙卡.mp4"),
+//                new File("C:\\Users\\Administrator\\Desktop\\new world tmp"),
                 new File("C:\\Users\\Administrator\\Desktop\\new world tmp\\23.09.26 卡芙卡.mp4")
         };
         long begin = System.currentTimeMillis();

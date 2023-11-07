@@ -36,7 +36,7 @@ public class DuplicateFileScanner {
                 messageDigests[i] = MessageDigest.getInstance(algorithm);
             } catch (NoSuchAlgorithmException e) {
                 System.err.println("启动失败！");
-                System.exit(1);
+                System.exit(2);
             }
         }
         ThreadFactory threadFactory = new ThreadFactory() {
@@ -81,14 +81,14 @@ public class DuplicateFileScanner {
             scanLatch.await();
         } catch (InterruptedException e) {
             System.err.println("任务被终止！");
-            System.exit(2);
+            System.exit(3);
         }
         executor.shutdown();
         try {
             executorLatch.await();
         } catch (InterruptedException e) {
             System.err.println("任务被终止！");
-            System.exit(2);
+            System.exit(3);
         }
         int uniqueCount = hashMap.size() + sizeMap.size();
         int repeatCount = this.repeatCount.get();
@@ -122,7 +122,7 @@ public class DuplicateFileScanner {
 
                     @Override
                     protected void operate(File file) {
-                        //超过2GB的文件的处理
+                        //1.预处理：超过2GB的文件改为判断文件大小
                         long size = file.length();
                         if (size > Integer.MAX_VALUE) {
                             String oldFile = sizeMap.put(size + "", file.toString());
@@ -133,19 +133,8 @@ public class DuplicateFileScanner {
                             }
                             return;
                         }
-                        //1.生成字节数组
-                        byte[] bytes;
-
-                        try {
-                            bytes = FileUtils.fileToBytes(file);
-                        } catch (Exception e) {
-                            failCount.addAndGet(1);
-                            e.printStackTrace();
-                            return;
-                        }
-                        //2.提交任务
-                        executor.execute(new WorkThread(bytes, file));
-                        System.out.println("阻塞队列长度：" + executor.getQueue().size());
+                        //2.提交给IO线程处理
+                        executor.execute(new IOThread(file));
                     }
                 }.scanFiles(path);
             } catch (FileNotFoundException e) {
@@ -156,21 +145,46 @@ public class DuplicateFileScanner {
         }
     }
 
-    private class WorkThread implements Runnable {
+    private class IOThread implements Runnable {
+
+        private final File file;
+
+        public IOThread(File file) {
+            this.file = file;
+        }
+
+        @Override
+        public void run() {
+            //1.读取文件并生成字节数组
+            byte[] bytes;
+            try {
+                bytes = FileUtils.fileToBytes(file);
+            } catch (Exception e) {
+                failCount.addAndGet(1);
+                e.printStackTrace();
+                return;
+            }
+            //2.提交给编码线程处理
+            executor.execute(new DigestThread(bytes, file));
+            System.out.println(executor.getQueue().size());
+        }
+    }
+
+    private class DigestThread implements Runnable {
 
         private final byte[] bytes;
         private final File file;
 
-        public WorkThread(byte[] bytes, File file) {
+        public DigestThread(byte[] bytes, File file) {
             this.bytes = bytes;
             this.file = file;
         }
 
         @Override
         public void run() {
-            //1.生成MD5码
+            //1.生成hash码
             String encode = HexBin.encode((((Worker) Thread.currentThread()).messageDigest).digest(bytes));
-            //2.处理结果
+            //2.加入hashMap（用于判断hash码是否相同）
             String oldFile = hashMap.put(encode, file.toString());
             if (oldFile != null) {
                 repeatCount.addAndGet(1);
