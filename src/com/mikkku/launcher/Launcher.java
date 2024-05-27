@@ -18,10 +18,7 @@ public class Launcher {
         if (!linkDir.mkdir())
             throw new FileAlreadyExistsException("The directory \"link\" is already exists");
         File[] files = {
-                new File("C:\\Users\\Administrator\\Desktop\\shattered-pixel-dungeon"),
-                new File("C:\\Users\\Administrator\\Desktop\\openJDK"),
-//                new File("C:\\Users\\Administrator\\Desktop\\new world tmp"),
-                new File("C:\\Users\\Administrator\\Desktop\\new world tmp\\23.09.26 卡芙卡.mp4")
+                new File("E://我的收藏")
         };
         long begin = System.currentTimeMillis();
         Object[] res = new DuplicateFileScanner("MD5", files).scan();
