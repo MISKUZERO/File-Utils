@@ -1,9 +1,9 @@
 package com.mikkku.scanner;
 
-import com.mikkku.util.FileUtils;
 import com.sun.org.apache.xerces.internal.impl.dv.util.HexBin;
 
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.security.MessageDigest;
@@ -16,8 +16,8 @@ public class DuplicateFileScanner {
     private static final int PROCESSORS = Runtime.getRuntime().availableProcessors();
     private static final int INIT_CAPACITY = 1 << 4;
 
+    private final String algorithm;
     private final File[] files;
-    private final MessageDigest[] messageDigests;
     private final CountDownLatch latch;
     private final ThreadPoolExecutor executor;
     private final AtomicInteger repeatCount = new AtomicInteger();
@@ -28,6 +28,7 @@ public class DuplicateFileScanner {
     private final ConcurrentHashMap<String, String> antiSizeMap = new ConcurrentHashMap<>(INIT_CAPACITY);
 
     public DuplicateFileScanner(String algorithm, File... files) throws IOException {
+        this.algorithm = algorithm;
         this.files = files;
         final int[] counts = {0};
         FileScanner fileScanner = new FileScanner() {
@@ -37,43 +38,10 @@ public class DuplicateFileScanner {
             }
         };
         for (File file : files) fileScanner.scanFiles(file);
-        System.out.println("=======> " + counts[0]);
         latch = new CountDownLatch(counts[0]);
-        messageDigests = new MessageDigest[PROCESSORS];
-        for (int i = 0; i < messageDigests.length; i++) {
-            try {
-                messageDigests[i] = MessageDigest.getInstance(algorithm);
-            } catch (NoSuchAlgorithmException e) {
-                System.err.println("启动失败！");
-                System.exit(1);
-            }
-        }
-        ThreadFactory threadFactory = new ThreadFactory() {
-            private int id;
-
-            @Override
-            public Thread newThread(Runnable r) {
-                System.out.println("Worker-" + id + ": 由" + Thread.currentThread().getName() + "线程创建！");
-                return new Worker(r, "Worker-" + id, messageDigests[id++]);
-            }
-        };
-        executor = new ThreadPoolExecutor(
-                PROCESSORS,
-                PROCESSORS,
-                0,
-                TimeUnit.SECONDS,
-                new LinkedBlockingQueue<>(PROCESSORS),
-                threadFactory,
-                new ThreadPoolExecutor.CallerRunsPolicy() {
-                    @Override
-                    public void rejectedExecution(Runnable r, ThreadPoolExecutor e) {
-                        System.err.println("拒绝策略执行！");
-                        super.rejectedExecution(r, e);
-                    }
-                }
-        );
+        executor = new ThreadPoolExecutor(PROCESSORS, PROCESSORS, 0, TimeUnit.SECONDS,
+                new LinkedBlockingQueue<>(PROCESSORS), Thread::new, new ThreadPoolExecutor.CallerRunsPolicy());
     }
-
 
     public Object[] scan() {
         for (File file : files) executor.execute(new ScanThread(file));
@@ -97,16 +65,6 @@ public class DuplicateFileScanner {
             System.exit(3);
         }
         return null;
-    }
-
-    private static class Worker extends Thread {
-
-        private final MessageDigest messageDigest;
-
-        private Worker(Runnable runnable, String name, MessageDigest messageDigest) {
-            super(runnable, name);
-            this.messageDigest = messageDigest;
-        }
     }
 
     private class ScanThread implements Runnable {
@@ -134,10 +92,9 @@ public class DuplicateFileScanner {
                                 antiSizeMap.put(size + "\\" + file, "");
                             }
                             latch.countDown();
-                            return;
-                        }
-                        //2.提交给IO线程处理
-                        executor.execute(new IOThread(file));
+                        } else
+                            //2.提交给IO线程处理
+                            executor.execute(new IOThread(file));
                     }
                 }.scanFiles(path);
             } catch (FileNotFoundException e) {
@@ -156,41 +113,55 @@ public class DuplicateFileScanner {
 
         @Override
         public void run() {
-            //1.读取文件并生成字节数组
-            byte[] bytes;
+            File file = this.file;
+            MessageDigest hashDigest = null;
             try {
-                bytes = FileUtils.fileToBytes(file);
+                hashDigest = MessageDigest.getInstance(algorithm);
+            } catch (NoSuchAlgorithmException e) {
+                System.err.println("算法不存在！");
+                System.exit(4);
+            }
+            //1.读取文件并生成字节数组
+            try {
+                try {
+                    byte[] cache = new byte[8 * 1024];
+                    try (FileInputStream fileInputStream = new FileInputStream(file)) {
+                        int len;
+                        while ((len = fileInputStream.read(cache)) != -1)
+                            hashDigest.update(cache, 0, len);
+                    }
+                } catch (Error error) {
+                    System.err.println("内存空间不足！");
+                    System.exit(5);
+                }
             } catch (Exception e) {
                 failCount.addAndGet(1);
                 e.printStackTrace();
                 return;
             }
             //2.提交给编码线程处理
-            executor.execute(new DigestThread(bytes, file));
+            executor.execute(new DigestThread(hashDigest, file));
         }
     }
 
     private class DigestThread implements Runnable {
 
-        private final byte[] bytes;
+        private final MessageDigest digest;
         private final File file;
 
-        public DigestThread(byte[] bytes, File file) {
-            this.bytes = bytes;
+        public DigestThread(MessageDigest digest, File file) {
+            this.digest = digest;
             this.file = file;
         }
 
         @Override
         public void run() {
             try {
-                //1.生成hash码
-                String encode = HexBin.encode((((Worker) Thread.currentThread()).messageDigest).digest(bytes));
-                //2.加入hashMap（用于判断hash码是否相同）
-                String oldFile = hashMap.put(encode, file.toString());
+                String hash = HexBin.encode(digest.digest()), oldFile = hashMap.put(hash, file.toString());
                 if (oldFile != null) {
                     repeatCount.addAndGet(1);
-                    antiHashMap.put(encode + "\\" + oldFile, "");
-                    antiHashMap.put(encode + "\\" + file, "");
+                    antiHashMap.put(hash + "\\" + oldFile, "");
+                    antiHashMap.put(hash + "\\" + file, "");
                 }
             } finally {
                 latch.countDown();
