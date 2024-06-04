@@ -5,18 +5,23 @@ import com.mikkku.scanner.DuplicateFileScanner;
 
 import java.io.File;
 import java.io.FileNotFoundException;
+import java.io.IOException;
 import java.io.PrintStream;
 import java.nio.file.FileAlreadyExistsException;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.Map;
 import java.util.Set;
 
 public class Launcher {
 
-    public static void main(String[] args) throws FileAlreadyExistsException {
+    public static void main(String[] args) throws IOException {
         // TODO: 2023/11/5 模拟数据，真实数据需要通过命令行传参
-        File linkDir = new File(System.getProperty("user.dir") + "\\link");
-        if (!linkDir.mkdir())
-            throw new FileAlreadyExistsException("The directory \"link\" is already exists");
+        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyyMMddHHmmss");
+        String prefix = System.getProperty("user.dir") + "\\link";
+        File linkPath = new File(prefix + formatter.format(LocalDateTime.now()));
+        while (!linkPath.mkdir())
+            linkPath = new File(prefix + formatter.format(LocalDateTime.now()));
         File[] files = {
                 new File("E://我的收藏")
         };
@@ -34,13 +39,13 @@ public class Launcher {
         Map<String, String> antiSizeMap = (Map<String, String>) res[5];
         //写入到vbs脚本（创建快捷方式）
         if (!antiHashMap.isEmpty()) {
-            File hashDir = new File(linkDir + "\\hash");
+            File hashDir = new File(linkPath + "\\hash");
             if (!hashDir.mkdir())
                 throw new FileAlreadyExistsException("The directory \"hash\" is already exists");
             writeVBS(antiHashMap, hashDir);
         }
         if (!antiSizeMap.isEmpty()) {
-            File sizeDir = new File(linkDir + "\\size");
+            File sizeDir = new File(linkPath + "\\size");
             if (!sizeDir.mkdir())
                 throw new FileAlreadyExistsException("The directory \"size\" is already exists");
             writeVBS(antiSizeMap, sizeDir);
